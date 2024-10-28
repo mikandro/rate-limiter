@@ -23,3 +23,15 @@ go.work.sum
 
 # env file
 .env
+
+/bin
+/vendor
+cover.html
+cover.out
+profile.out
+stat.csv
+stat.txt
+stat.html
+
+*.swp
+.idea
