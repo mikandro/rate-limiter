@@ -14,11 +14,45 @@ type RateLimiter struct {
 }
 
 func NewRateLimiter(capacity, rate) *RateLimiter {
+	if capacity <= 0 {
+		panic("Capacity must be greater than 0")
+	}
+
+	if rate <= 0 {
+		panic("Rate must be greater than 0")
+	}
+
 	return &RateLimiter{
-		capacity: capacity,
-		tokens: capacity,
-		rate: rate,
+		capacity:      capacity,
+		tokens:        capacity,
+		rate:          rate,
 		lastRefreshed: time.Now(),
-		mutex: sync.Mutex{}
+		mutex:         sync.Mutex{},
+	}
+}
+
+func Allow(rl *RateLimiter) bool {
+	if rl.tokens > 0 {
+		rl.tokens--
+		return true
+	}
+
+	return false
+}
+
+func refill(rl *RateLimiter) {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(rl.lastRefreshed)
+
+	if elapsed > 0 {
+		tokensToAdd := int(elapsed / rl.rate)
+		if tokensToAdd > 0 {
+			// Add new tokens or max capacity
+			rl.tokens = min(rl.capacity, rl.tokens+tokensToAdd)
+			rl.lastRefreshed = rl.lastRefreshed.Add(time.Duration(tokensToAdd) * rl.rate)
+		}
 	}
 }
