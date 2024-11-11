@@ -13,7 +13,7 @@ type RateLimiter struct {
 	mutex         sync.Mutex
 }
 
-func NewRateLimiter(capacity, rate) *RateLimiter {
+func NewRateLimiter(capacity int, rate time.Duration) *RateLimiter {
 	if capacity <= 0 {
 		panic("Capacity must be greater than 0")
 	}
@@ -31,7 +31,9 @@ func NewRateLimiter(capacity, rate) *RateLimiter {
 	}
 }
 
-func Allow(rl *RateLimiter) bool {
+func (rl *RateLimiter) Allow() bool {
+	rl.refill()
+
 	if rl.tokens > 0 {
 		rl.tokens--
 		return true
@@ -40,7 +42,7 @@ func Allow(rl *RateLimiter) bool {
 	return false
 }
 
-func refill(rl *RateLimiter) {
+func (rl *RateLimiter) refill() {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
