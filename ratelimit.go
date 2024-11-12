@@ -1,6 +1,8 @@
 package ratelimit
 
 import (
+	"context"
+	"log"
 	"sync"
 	"time"
 )
@@ -32,6 +34,8 @@ func NewRateLimiter(capacity int, rate time.Duration) *RateLimiter {
 }
 
 func (rl *RateLimiter) Allow() bool {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
 	rl.refill()
 
 	if rl.tokens > 0 {
@@ -43,9 +47,6 @@ func (rl *RateLimiter) Allow() bool {
 }
 
 func (rl *RateLimiter) refill() {
-	rl.mutex.Lock()
-	defer rl.mutex.Unlock()
-
 	now := time.Now()
 	elapsed := now.Sub(rl.lastRefreshed)
 
@@ -55,6 +56,30 @@ func (rl *RateLimiter) refill() {
 			// Add new tokens or max capacity
 			rl.tokens = min(rl.capacity, rl.tokens+tokensToAdd)
 			rl.lastRefreshed = rl.lastRefreshed.Add(time.Duration(tokensToAdd) * rl.rate)
+		}
+	}
+}
+
+func (rl *RateLimiter) Wait(ctx context.Context) error {
+	for {
+		rl.mutex.Lock()
+		rl.refill()
+
+		if rl.tokens > 0 {
+			rl.tokens--
+			log.Printf("Wait: Request allowed after waiting. Tokens remaingin: %d", rl.tokens)
+			rl.mutex.Unlock()
+			return nil
+		}
+		rl.mutex.Unlock() // Release the lock so other coroutines can access ratelimiter and refill
+
+		// check if the context is done (timeour or cancelled)
+		select {
+		case <-ctx.Done():
+			log.Printf("Wait: Request denied due to context timeout")
+			return ctx.Err()
+		default:
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
