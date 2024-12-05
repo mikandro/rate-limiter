@@ -54,16 +54,6 @@ func main() {
 - **`Wait(ctx context.Context) error`**:
   - Blocking. Waits for a token to become available or until the context expires.
 
-## Versioning
-
-This project follows **semantic versioning** conventions:
-
-- **`MAJOR.MINOR.PATCH`** format.
-- **Major versions** (`v1`, `v2`, etc.) indicate breaking changes.
-- **Minor versions** add functionality in a backward-compatible manner.
-- **Patch versions** are for backward-compatible bug fixes.
-
-You can find released versions [here](https://github.com/yourusername/ratelimiter/releases).
 
 ### Tagging Releases
 
