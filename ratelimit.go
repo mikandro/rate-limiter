@@ -7,7 +7,38 @@ import (
 	"time"
 )
 
-type RateLimiter struct {
+type RateLimiter interface {
+	Allow() bool
+	Wait(ctx context.Context) error
+	GetCapacity() int
+	GetAvailableTokens() int
+}
+
+type Algorithm int
+
+const (
+	TokenBucket Algorithm = iota
+	LeakyBucket
+)
+
+type Options struct {
+	Capacity  int
+	Rate      time.Duration
+}
+
+func (o Options) validate() error {
+	if o.Capacity <= 0 {
+		return fmt.Errorf("capacity must be greater than 0")
+	}
+
+	if o.Rate <= 0 {
+		return fmt.Errorf("rate must be greater than 0")
+	}
+
+	return nil
+}
+
+type TokenBucketRateLimiter struct {
 	capacity      int
 	tokens        int
 	rate          time.Duration
@@ -15,25 +46,21 @@ type RateLimiter struct {
 	mutex         sync.Mutex
 }
 
-func NewRateLimiter(capacity int, rate time.Duration) *RateLimiter {
-	if capacity <= 0 {
-		panic("Capacity must be greater than 0")
+func NewTokenBucketRateLimiter(opts Options) (*TokenBucketRateLimiter, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
 	}
 
-	if rate <= 0 {
-		panic("Rate must be greater than 0")
-	}
-
-	return &RateLimiter{
-		capacity:      capacity,
-		tokens:        capacity,
-		rate:          rate,
+	return &TokenBucketRateLimiter{
+		capacity:      opts.Capacity,
+		tokens:        opts.Capacity,
+		rate:          opts.Rate,
 		lastRefreshed: time.Now(),
 		mutex:         sync.Mutex{},
-	}
+	}, nil
 }
 
-func (rl *RateLimiter) Allow() bool {
+func (rl *TokenBucketRateLimiter) Allow() bool {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 	rl.refill()
@@ -46,7 +73,7 @@ func (rl *RateLimiter) Allow() bool {
 	return false
 }
 
-func (rl *RateLimiter) refill() {
+func (rl *TokenBucketRateLimiter) refill() {
 	now := time.Now()
 	elapsed := now.Sub(rl.lastRefreshed)
 
@@ -60,7 +87,7 @@ func (rl *RateLimiter) refill() {
 	}
 }
 
-func (rl *RateLimiter) Wait(ctx context.Context) error {
+func (rl *TokenBucketRateLimiter) Wait(ctx context.Context) error {
 	for {
 		rl.mutex.Lock()
 		rl.refill()
@@ -82,4 +109,48 @@ func (rl *RateLimiter) Wait(ctx context.Context) error {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+}
+
+
+type LeakyBucketRateLimiter struct {
+	capacity int
+	waterLevel int
+	leakRate time.Duration
+	lastLeak time.Time
+	mutex sync.Mutex
+}
+
+func NewLeakyBucketRateLimiter(opts Options) (*LeakyBucketRateLimiter, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+
+	return &LeakyBucketRateLimiter{
+		capacity: opts.Capacity,
+		waterLevel: opts.Capacity,
+		leakRate: opts.Rate,
+		lastLeak: time.Now(),
+		mutex: sync.Mutex{},
+	}, nil
+}
+
+func (rl *LeakyBucketRateLimiter) Allow() bool {
+// implementation	
+	
+}
+
+func (rl *LeakyBucketRateLimiter) Wait(ctx context.Context) error {
+	// implementation
+}
+
+func (rl *LeakyBucketRateLimiter) leak() {
+	// implementation
+}
+
+func (rl *LeakyBucketRateLimiter) GetCapacity() int {
+	// implementation
+}
+
+func (rl *LeakyBucketRateLimiter) GetAvailableTokens() int {
+	// implementation
 }
