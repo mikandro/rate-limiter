@@ -114,9 +114,9 @@ func (rl *TokenBucketRateLimiter) Wait(ctx context.Context) error {
 
 type LeakyBucketRateLimiter struct {
 	capacity int
-	waterLevel int
-	leakRate time.Duration
-	lastLeak time.Time
+	currentRequests int
+	rate time.Duration
+	lastRefreshed time.Time
 	mutex sync.Mutex
 }
 
@@ -127,24 +127,64 @@ func NewLeakyBucketRateLimiter(opts Options) (*LeakyBucketRateLimiter, error) {
 
 	return &LeakyBucketRateLimiter{
 		capacity: opts.Capacity,
-		waterLevel: opts.Capacity,
-		leakRate: opts.Rate,
-		lastLeak: time.Now(),
+		currentRequests: opts.Capacity,
+		rate: opts.Rate,
+		lastRefreshed: time.Now(),
 		mutex: sync.Mutex{},
 	}, nil
 }
 
 func (rl *LeakyBucketRateLimiter) Allow() bool {
-// implementation	
+	rl.mutex.Lock();
+	defer rl.mutex.Unlock();
+	rl.leak();
+
+	if rl.currentRequests < rl.capacity {
+		rl.currentRequests++
+		return true
+	}
+
+	return false
 	
 }
 
 func (rl *LeakyBucketRateLimiter) Wait(ctx context.Context) error {
-	// implementation
+	for {
+		rl.mutex.Lock();
+		rl.leag();
+
+		if rl.currentRequests < rl.capacity {
+			rl.currentRequests++
+			log.Printf("Wait: Request allowed after waiting. Reqeusts remaining: %d", rl.capacity - rl.currentRequests)
+			rl.mutex.Unlock()
+			return nil
+		}
+
+		timeUntilNextRequest := rl.rate - time.Since(rl.lastRefreshed)
+		if(timeUntilNextRequest <= 0) {
+			rl.mutex.Unlock()
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Printf("Wait: Request denied due to context timeout")
+			return ctx.Err()
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 func (rl *LeakyBucketRateLimiter) leak() {
-	// implementation
+	currentTime := time.Now()
+	elapsedTime := currentTime.Sub(rl.lastRefreshed)
+
+	leakedRequests := int(elapsedTime / rl.rate)
+	if leakedRequests > 0 {
+		rl.currentRequests = max(0, rl.currentRequests - leakedRequests)
+		rl.lastRefreshed = currentTime
+	}
 }
 
 func (rl *LeakyBucketRateLimiter) GetCapacity() int {
