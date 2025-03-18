@@ -188,9 +188,16 @@ func (rl *LeakyBucketRateLimiter) leak() {
 }
 
 func (rl *LeakyBucketRateLimiter) GetCapacity() int {
-	// implementation
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+	return rl.capacity
 }
 
 func (rl *LeakyBucketRateLimiter) GetAvailableTokens() int {
-	// implementation
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+	return rl.capacity - rl.currentRequests
 }
+
+
+
