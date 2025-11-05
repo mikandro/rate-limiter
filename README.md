@@ -19,6 +19,7 @@ A simple, thread-safe rate limiting library implemented in Go. It limits the rat
 - Configurable **rate** and **capacity**.
 - Supports both **blocking (`Wait()`)** and **non-blocking (`Allow()`)** modes.
 - Designed to be **thread-safe** for concurrent usage.
+- **Distributed rate limiting** with Redis for cross-instance synchronization.
 - Common interface for all rate limiting strategies.
 
 ## Installation
@@ -317,6 +318,8 @@ All rate limiters implement the `RateLimiter` interface:
   - Returns the number of currently available tokens/slots.
 
 ### Creating Rate Limiters
+
+#### Local (Single-Instance) Rate Limiters
 
 - **`NewTokenBucketRateLimiter(opts Options) (*TokenBucketRateLimiter, error)`**:
   - Creates a Token Bucket rate limiter with specified options.
