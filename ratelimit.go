@@ -21,6 +21,8 @@ const (
 	TokenBucket Algorithm = iota
 	LeakyBucket
 	DistributedTokenBucket
+	SlidingWindowCounter
+	FixedWindowCounter
 )
 
 type Options struct {
@@ -201,5 +203,232 @@ func (rl *LeakyBucketRateLimiter) GetAvailableTokens() int {
 	return rl.capacity - rl.currentRequests
 }
 
+// SlidingWindowCounterRateLimiter implements a sliding window counter algorithm
+// It provides smooth rate limiting by using a weighted average between the current
+// and previous window counts, eliminating the burst problem at window boundaries.
+type SlidingWindowCounterRateLimiter struct {
+	capacity           int
+	windowSize         time.Duration
+	currentWindowStart time.Time
+	currentCount       int
+	previousCount      int
+	mutex              sync.Mutex
+}
+
+func NewSlidingWindowCounterRateLimiter(opts Options) (*SlidingWindowCounterRateLimiter, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+
+	return &SlidingWindowCounterRateLimiter{
+		capacity:           opts.Capacity,
+		windowSize:         opts.Rate,
+		currentWindowStart: time.Now(),
+		currentCount:       0,
+		previousCount:      0,
+		mutex:              sync.Mutex{},
+	}, nil
+}
+
+func (rl *SlidingWindowCounterRateLimiter) Allow() bool {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	rl.slideWindow()
+
+	// Calculate weighted count across sliding window
+	now := time.Now()
+	elapsedInCurrentWindow := now.Sub(rl.currentWindowStart)
+	percentageInCurrentWindow := float64(elapsedInCurrentWindow) / float64(rl.windowSize)
+
+	// Weighted count: previous window contribution + current window
+	weightedCount := float64(rl.previousCount)*(1-percentageInCurrentWindow) + float64(rl.currentCount)
+
+	if weightedCount < float64(rl.capacity) {
+		rl.currentCount++
+		return true
+	}
+
+	return false
+}
+
+func (rl *SlidingWindowCounterRateLimiter) Wait(ctx context.Context) error {
+	for {
+		rl.mutex.Lock()
+		rl.slideWindow()
+
+		now := time.Now()
+		elapsedInCurrentWindow := now.Sub(rl.currentWindowStart)
+		percentageInCurrentWindow := float64(elapsedInCurrentWindow) / float64(rl.windowSize)
+
+		weightedCount := float64(rl.previousCount)*(1-percentageInCurrentWindow) + float64(rl.currentCount)
+
+		if weightedCount < float64(rl.capacity) {
+			rl.currentCount++
+			log.Printf("Wait: Request allowed after waiting. Current count: %d", rl.currentCount)
+			rl.mutex.Unlock()
+			return nil
+		}
+		rl.mutex.Unlock()
+
+		select {
+		case <-ctx.Done():
+			log.Printf("Wait: Request denied due to context timeout")
+			return ctx.Err()
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// slideWindow checks if we need to advance to a new window
+// and updates the window counters accordingly
+func (rl *SlidingWindowCounterRateLimiter) slideWindow() {
+	now := time.Now()
+	elapsedSinceWindowStart := now.Sub(rl.currentWindowStart)
+
+	// If we've passed one or more full windows
+	if elapsedSinceWindowStart >= rl.windowSize {
+		windowsPassed := int(elapsedSinceWindowStart / rl.windowSize)
+
+		if windowsPassed == 1 {
+			// Move to next window: current becomes previous
+			rl.previousCount = rl.currentCount
+			rl.currentCount = 0
+		} else {
+			// Multiple windows passed: both reset to 0
+			rl.previousCount = 0
+			rl.currentCount = 0
+		}
+
+		// Advance the window start time
+		rl.currentWindowStart = rl.currentWindowStart.Add(time.Duration(windowsPassed) * rl.windowSize)
+	}
+}
+
+func (rl *SlidingWindowCounterRateLimiter) GetCapacity() int {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+	return rl.capacity
+}
+
+func (rl *SlidingWindowCounterRateLimiter) GetAvailableTokens() int {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	rl.slideWindow()
+
+	now := time.Now()
+	elapsedInCurrentWindow := now.Sub(rl.currentWindowStart)
+	percentageInCurrentWindow := float64(elapsedInCurrentWindow) / float64(rl.windowSize)
+
+	weightedCount := float64(rl.previousCount)*(1-percentageInCurrentWindow) + float64(rl.currentCount)
+	available := float64(rl.capacity) - weightedCount
+
+	if available < 0 {
+		return 0
+	}
+	return int(available)
+}
+
+// FixedWindowCounterRateLimiter implements a fixed window counter algorithm
+// It divides time into fixed windows and counts requests in each window.
+// Simple and memory efficient, but can allow bursts at window boundaries.
+type FixedWindowCounterRateLimiter struct {
+	capacity      int
+	windowSize    time.Duration
+	windowStart   time.Time
+	requestCount  int
+	mutex         sync.Mutex
+}
+
+func NewFixedWindowCounterRateLimiter(opts Options) (*FixedWindowCounterRateLimiter, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+
+	return &FixedWindowCounterRateLimiter{
+		capacity:     opts.Capacity,
+		windowSize:   opts.Rate,
+		windowStart:  time.Now(),
+		requestCount: 0,
+		mutex:        sync.Mutex{},
+	}, nil
+}
+
+func (rl *FixedWindowCounterRateLimiter) Allow() bool {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	rl.resetWindowIfNeeded()
+
+	if rl.requestCount < rl.capacity {
+		rl.requestCount++
+		return true
+	}
+
+	return false
+}
+
+func (rl *FixedWindowCounterRateLimiter) Wait(ctx context.Context) error {
+	for {
+		rl.mutex.Lock()
+		rl.resetWindowIfNeeded()
+
+		if rl.requestCount < rl.capacity {
+			rl.requestCount++
+			log.Printf("Wait: Request allowed after waiting. Requests in window: %d", rl.requestCount)
+			rl.mutex.Unlock()
+			return nil
+		}
+
+		// Calculate time until next window
+		timeUntilNextWindow := rl.windowSize - time.Since(rl.windowStart)
+		rl.mutex.Unlock()
+
+		select {
+		case <-ctx.Done():
+			log.Printf("Wait: Request denied due to context timeout")
+			return ctx.Err()
+		case <-time.After(timeUntilNextWindow):
+			// Window has reset, try again
+			continue
+		}
+	}
+}
+
+// resetWindowIfNeeded checks if current window has expired and resets counter
+func (rl *FixedWindowCounterRateLimiter) resetWindowIfNeeded() {
+	now := time.Now()
+	elapsedSinceWindowStart := now.Sub(rl.windowStart)
+
+	// If we've passed the window boundary
+	if elapsedSinceWindowStart >= rl.windowSize {
+		windowsPassed := int(elapsedSinceWindowStart / rl.windowSize)
+
+		// Reset the counter and advance the window
+		rl.requestCount = 0
+		rl.windowStart = rl.windowStart.Add(time.Duration(windowsPassed) * rl.windowSize)
+	}
+}
+
+func (rl *FixedWindowCounterRateLimiter) GetCapacity() int {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+	return rl.capacity
+}
+
+func (rl *FixedWindowCounterRateLimiter) GetAvailableTokens() int {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	rl.resetWindowIfNeeded()
+
+	available := rl.capacity - rl.requestCount
+	if available < 0 {
+		return 0
+	}
+	return available
+}
 
 
