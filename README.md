@@ -7,9 +7,13 @@ A simple, thread-safe rate limiting library implemented in Go. It limits the rat
 - **Multiple Rate Limiting Strategies**:
   - **Token Bucket**: Allows burst traffic up to capacity with token refills at a fixed rate.
   - **Leaky Bucket**: Provides uniform rate limiting by "leaking" requests at a constant rate.
+  - **Sliding Window Counter**: Smooth rate limiting using weighted averages between windows.
+  - **Fixed Window Counter**: Simple time-window based rate limiting.
+  - **Distributed Token Bucket**: Redis-backed rate limiting for distributed systems.
 - Configurable **rate** and **capacity**.
 - Supports both **blocking (`Wait()`)** and **non-blocking (`Allow()`)** modes.
 - Designed to be **thread-safe** for concurrent usage.
+- **Distributed rate limiting** with Redis for cross-instance synchronization.
 - Common interface for all rate limiting strategies.
 
 ## Installation
@@ -89,6 +93,60 @@ func main() {
 }
 ```
 
+### Distributed Token Bucket Example (Redis)
+
+For distributed systems where multiple instances need to share rate limit state:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+    "github.com/mikandro/ratelimiter"
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    // Create Redis client
+    redisClient := redis.NewClient(&redis.Options{
+        Addr:     "localhost:6379",
+        Password: "", // no password set
+        DB:       0,  // use default DB
+    })
+    defer redisClient.Close()
+
+    // Test Redis connection
+    ctx := context.Background()
+    if _, err := redisClient.Ping(ctx).Result(); err != nil {
+        panic(fmt.Sprintf("Failed to connect to Redis: %v", err))
+    }
+
+    // Create a distributed rate limiter
+    // Allows 5 requests per second across ALL instances
+    limiter, err := ratelimiter.NewDistributedTokenBucketRateLimiter(ratelimiter.DistributedOptions{
+        RedisClient: redisClient,
+        Key:         "my-app:rate-limiter:api",
+        Capacity:    5,
+        Rate:        time.Second / 5, // One token every 200ms
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Use the rate limiter
+    for i := 1; i <= 10; i++ {
+        if limiter.Allow() {
+            fmt.Printf("Request %d: ALLOWED (Tokens remaining: %d)\n", i, limiter.GetAvailableTokens())
+        } else {
+            fmt.Printf("Request %d: DENIED (Tokens remaining: %d)\n", i, limiter.GetAvailableTokens())
+        }
+        time.Sleep(100 * time.Millisecond)
+    }
+}
+```
+
 ## API Overview
 
 ### RateLimiter Interface
@@ -106,10 +164,26 @@ All rate limiters implement the `RateLimiter` interface:
 
 ### Creating Rate Limiters
 
+#### Local (Single-Instance) Rate Limiters
+
 - **`NewTokenBucketRateLimiter(opts Options) (*TokenBucketRateLimiter, error)`**:
   - Creates a Token Bucket rate limiter with specified options.
 - **`NewLeakyBucketRateLimiter(opts Options) (*LeakyBucketRateLimiter, error)`**:
   - Creates a Leaky Bucket rate limiter with specified options.
+- **`NewSlidingWindowCounterRateLimiter(opts Options) (*SlidingWindowCounterRateLimiter, error)`**:
+  - Creates a Sliding Window Counter rate limiter with specified options.
+- **`NewFixedWindowCounterRateLimiter(opts Options) (*FixedWindowCounterRateLimiter, error)`**:
+  - Creates a Fixed Window Counter rate limiter with specified options.
+
+#### Distributed Rate Limiters
+
+- **`NewDistributedTokenBucketRateLimiter(opts DistributedOptions) (*DistributedTokenBucketRateLimiter, error)`**:
+  - Creates a distributed Token Bucket rate limiter backed by Redis.
+  - `DistributedOptions` fields:
+    - `RedisClient *redis.Client`: Redis client instance (required)
+    - `Key string`: Redis key for this rate limiter (required, e.g., "app:user:123:api")
+    - `Capacity int`: Maximum number of tokens (required, must be > 0)
+    - `Rate time.Duration`: Time to add one token (required, must be > 0)
 
 
 ### Tagging Releases
@@ -146,6 +220,6 @@ See [CHANGELOG.md](CHANGELOG.md) for the detailed history of changes.
 
 ## Future Improvements
 
-- **Distributed Rate Limiting**: Add support for distributed rate limiting using Redis.
-- **Additional Rate Limiting Strategies**: Implement other strategies such as **Sliding Window**, **Fixed Window Counter**, and **Sliding Log**.
+- **Additional Rate Limiting Strategies**: Implement other strategies such as **Sliding Log**.
 - **Enhanced Middleware Support**: Expand middleware integration with popular Go HTTP frameworks such as Echo and Chi.
+- **Distributed versions of other algorithms**: Extend Redis support to Sliding Window and Fixed Window algorithms.
