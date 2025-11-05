@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ type Algorithm int
 const (
 	TokenBucket Algorithm = iota
 	LeakyBucket
+	SlidingWindowCounter
 )
 
 type Options struct {
@@ -199,5 +201,132 @@ func (rl *LeakyBucketRateLimiter) GetAvailableTokens() int {
 	return rl.capacity - rl.currentRequests
 }
 
+// SlidingWindowCounterRateLimiter implements a sliding window counter algorithm
+// It provides smooth rate limiting by using a weighted average between the current
+// and previous window counts, eliminating the burst problem at window boundaries.
+type SlidingWindowCounterRateLimiter struct {
+	capacity           int
+	windowSize         time.Duration
+	currentWindowStart time.Time
+	currentCount       int
+	previousCount      int
+	mutex              sync.Mutex
+}
+
+func NewSlidingWindowCounterRateLimiter(opts Options) (*SlidingWindowCounterRateLimiter, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+
+	return &SlidingWindowCounterRateLimiter{
+		capacity:           opts.Capacity,
+		windowSize:         opts.Rate,
+		currentWindowStart: time.Now(),
+		currentCount:       0,
+		previousCount:      0,
+		mutex:              sync.Mutex{},
+	}, nil
+}
+
+func (rl *SlidingWindowCounterRateLimiter) Allow() bool {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	rl.slideWindow()
+
+	// Calculate weighted count across sliding window
+	now := time.Now()
+	elapsedInCurrentWindow := now.Sub(rl.currentWindowStart)
+	percentageInCurrentWindow := float64(elapsedInCurrentWindow) / float64(rl.windowSize)
+
+	// Weighted count: previous window contribution + current window
+	weightedCount := float64(rl.previousCount)*(1-percentageInCurrentWindow) + float64(rl.currentCount)
+
+	if weightedCount < float64(rl.capacity) {
+		rl.currentCount++
+		return true
+	}
+
+	return false
+}
+
+func (rl *SlidingWindowCounterRateLimiter) Wait(ctx context.Context) error {
+	for {
+		rl.mutex.Lock()
+		rl.slideWindow()
+
+		now := time.Now()
+		elapsedInCurrentWindow := now.Sub(rl.currentWindowStart)
+		percentageInCurrentWindow := float64(elapsedInCurrentWindow) / float64(rl.windowSize)
+
+		weightedCount := float64(rl.previousCount)*(1-percentageInCurrentWindow) + float64(rl.currentCount)
+
+		if weightedCount < float64(rl.capacity) {
+			rl.currentCount++
+			log.Printf("Wait: Request allowed after waiting. Current count: %d", rl.currentCount)
+			rl.mutex.Unlock()
+			return nil
+		}
+		rl.mutex.Unlock()
+
+		select {
+		case <-ctx.Done():
+			log.Printf("Wait: Request denied due to context timeout")
+			return ctx.Err()
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// slideWindow checks if we need to advance to a new window
+// and updates the window counters accordingly
+func (rl *SlidingWindowCounterRateLimiter) slideWindow() {
+	now := time.Now()
+	elapsedSinceWindowStart := now.Sub(rl.currentWindowStart)
+
+	// If we've passed one or more full windows
+	if elapsedSinceWindowStart >= rl.windowSize {
+		windowsPassed := int(elapsedSinceWindowStart / rl.windowSize)
+
+		if windowsPassed == 1 {
+			// Move to next window: current becomes previous
+			rl.previousCount = rl.currentCount
+			rl.currentCount = 0
+		} else {
+			// Multiple windows passed: both reset to 0
+			rl.previousCount = 0
+			rl.currentCount = 0
+		}
+
+		// Advance the window start time
+		rl.currentWindowStart = rl.currentWindowStart.Add(time.Duration(windowsPassed) * rl.windowSize)
+	}
+}
+
+func (rl *SlidingWindowCounterRateLimiter) GetCapacity() int {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+	return rl.capacity
+}
+
+func (rl *SlidingWindowCounterRateLimiter) GetAvailableTokens() int {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	rl.slideWindow()
+
+	now := time.Now()
+	elapsedInCurrentWindow := now.Sub(rl.currentWindowStart)
+	percentageInCurrentWindow := float64(elapsedInCurrentWindow) / float64(rl.windowSize)
+
+	weightedCount := float64(rl.previousCount)*(1-percentageInCurrentWindow) + float64(rl.currentCount)
+	available := float64(rl.capacity) - weightedCount
+
+	if available < 0 {
+		return 0
+	}
+	return int(available)
+}
 
 
