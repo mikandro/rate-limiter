@@ -151,7 +151,7 @@ func (rl *LeakyBucketRateLimiter) Allow() bool {
 func (rl *LeakyBucketRateLimiter) Wait(ctx context.Context) error {
 	for {
 		rl.mutex.Lock();
-		rl.leag();
+		rl.leak();
 
 		if rl.currentRequests < rl.capacity {
 			rl.currentRequests++
