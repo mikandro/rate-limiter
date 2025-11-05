@@ -21,6 +21,7 @@ const (
 	TokenBucket Algorithm = iota
 	LeakyBucket
 	SlidingWindowCounter
+	FixedWindowCounter
 )
 
 type Options struct {
@@ -327,6 +328,106 @@ func (rl *SlidingWindowCounterRateLimiter) GetAvailableTokens() int {
 		return 0
 	}
 	return int(available)
+}
+
+// FixedWindowCounterRateLimiter implements a fixed window counter algorithm
+// It divides time into fixed windows and counts requests in each window.
+// Simple and memory efficient, but can allow bursts at window boundaries.
+type FixedWindowCounterRateLimiter struct {
+	capacity      int
+	windowSize    time.Duration
+	windowStart   time.Time
+	requestCount  int
+	mutex         sync.Mutex
+}
+
+func NewFixedWindowCounterRateLimiter(opts Options) (*FixedWindowCounterRateLimiter, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+
+	return &FixedWindowCounterRateLimiter{
+		capacity:     opts.Capacity,
+		windowSize:   opts.Rate,
+		windowStart:  time.Now(),
+		requestCount: 0,
+		mutex:        sync.Mutex{},
+	}, nil
+}
+
+func (rl *FixedWindowCounterRateLimiter) Allow() bool {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	rl.resetWindowIfNeeded()
+
+	if rl.requestCount < rl.capacity {
+		rl.requestCount++
+		return true
+	}
+
+	return false
+}
+
+func (rl *FixedWindowCounterRateLimiter) Wait(ctx context.Context) error {
+	for {
+		rl.mutex.Lock()
+		rl.resetWindowIfNeeded()
+
+		if rl.requestCount < rl.capacity {
+			rl.requestCount++
+			log.Printf("Wait: Request allowed after waiting. Requests in window: %d", rl.requestCount)
+			rl.mutex.Unlock()
+			return nil
+		}
+
+		// Calculate time until next window
+		timeUntilNextWindow := rl.windowSize - time.Since(rl.windowStart)
+		rl.mutex.Unlock()
+
+		select {
+		case <-ctx.Done():
+			log.Printf("Wait: Request denied due to context timeout")
+			return ctx.Err()
+		case <-time.After(timeUntilNextWindow):
+			// Window has reset, try again
+			continue
+		}
+	}
+}
+
+// resetWindowIfNeeded checks if current window has expired and resets counter
+func (rl *FixedWindowCounterRateLimiter) resetWindowIfNeeded() {
+	now := time.Now()
+	elapsedSinceWindowStart := now.Sub(rl.windowStart)
+
+	// If we've passed the window boundary
+	if elapsedSinceWindowStart >= rl.windowSize {
+		windowsPassed := int(elapsedSinceWindowStart / rl.windowSize)
+
+		// Reset the counter and advance the window
+		rl.requestCount = 0
+		rl.windowStart = rl.windowStart.Add(time.Duration(windowsPassed) * rl.windowSize)
+	}
+}
+
+func (rl *FixedWindowCounterRateLimiter) GetCapacity() int {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+	return rl.capacity
+}
+
+func (rl *FixedWindowCounterRateLimiter) GetAvailableTokens() int {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	rl.resetWindowIfNeeded()
+
+	available := rl.capacity - rl.requestCount
+	if available < 0 {
+		return 0
+	}
+	return available
 }
 
 
