@@ -20,6 +20,7 @@ type Algorithm int
 const (
 	TokenBucket Algorithm = iota
 	LeakyBucket
+	DistributedTokenBucket
 	SlidingWindowCounter
 	FixedWindowCounter
 )
