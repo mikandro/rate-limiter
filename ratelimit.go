@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ type Algorithm int
 const (
 	TokenBucket Algorithm = iota
 	LeakyBucket
+	DistributedTokenBucket
 )
 
 type Options struct {
